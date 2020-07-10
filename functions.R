@@ -477,7 +477,7 @@ adapt_lasso <- function(X, Y, CV = T, lamb_lasso = 1, model = 'gaussian'){
 
 
 
-CRT_sMC <- function(Y, X, Sigma_X, m = 1000,
+CRT_sMC <- function(Y, X, Sigma_X, m = 1000, set_use = 1:ncol(X),
                     type = 'LASSO', FDR = 0.1, model = 'gaussian'){
   p <- length(X[1, ])
   n <- length(Y)
@@ -504,6 +504,8 @@ CRT_sMC <- function(Y, X, Sigma_X, m = 1000,
   }
   
   nonzero_set <- which(beta_fit != 0)
+  
+  nonzero_set <- intersect(nonzero_set, set_use)
   if (is.null(nonzero_set)){
     return(c())
   }
@@ -742,9 +744,18 @@ HRT <- function(Y, X, Sigma = NULL, FDR = 0.1, N = 30000,
     pvl_lst[setdiff(1:p, test_group)] <- runif(length(setdiff(1:p, test_group)), 0, 1)
   }
   
-  CR_BHq_lst <- p.adjust(pvl_lst, method = 'BH')
-  selection_set_CR <- which(CR_BHq_lst <= FDR)
-  return(list(select_set = selection_set_CR, p_values = pvl_lst))
+  set_select <- which(pvl_lst != 1)
+  pvl_select <- pvl_lst[set_select]
+  CRT_BHq_lst <- p.adjust(pvl_select, method = 'BH')
+  select_BHq <- which(CRT_BHq_lst <= FDR)
+  select_BHq <- set_select[select_BHq]
+  
+  select_Bf <- which(pvl_select <= min(0.1 / length(set_select), 0.1))
+  select_Bf <- set_select[select_Bf]
+    
+  #CR_BHq_lst <- p.adjust(pvl_lst, method = 'BH')
+  #selection_set_CR <- which(CR_BHq_lst <= FDR)
+  return(list(select_set = select_BHq, p_values = pvl_lst, select_FWER = select_Bf))
   
 }
 

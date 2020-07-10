@@ -86,7 +86,7 @@ d0CRT_results <- dCRT(X, Y, Sigma_X = Sigma_true,
 
 dICRT_results <- dCRT(X, Y, Sigma_X = Sigma_true, 
                       d.interaction = T, k = as.integer(2 * log(p)),
-                      FDR = 0.1, model = 'Gaussian_lasso') 
+                      FDR = 0.1, MC_free = T, model = 'Gaussian_lasso') 
 
 
 ############### dICRT (natural form) ###############
@@ -142,5 +142,50 @@ Gen_X_example <- function(X, indx, num = 1){
 d0CRT_results <- dCRT(X, Y,FDR = 0.1, mean_X_mat = matrix(6, n, p), 
                       Gen_X = Gen_X_example, CDR = 'Consist w model',
                       model = 'Gaussian_lasso', k = 0, MC_free = F)
+
+
+
+#####################################################
+################# Benchmark methods #################
+#####################################################
+
+############### HRT ###############
+
+HRT_results <- HRT(Y, X, Sigma = Sigma_true, FDR = 0.1, N = 30000, 
+                  model = 'gaussian')
+
+############### original CRT ###############
+
+
+#### LASSO ########
+CRT_lasso_results <- CRT_sMC(Y, X, Sigma_X = Sigma_true, m = 15000, 
+                        type = 'LASSO', FDR = 0.1, model = 'gaussian')
+
+#### Elastic net ####
+
+CRT_elanet_results <- CRT_sMC(Y, X, Sigma_X = Sigma_true, m = 15000, 
+                        type = 'Elasnet', FDR = 0.1, model = 'gaussian')
+
+#### AdaLASSO ####
+
+CRT_adalasso_results <- CRT_sMC(Y, X, Sigma_X = Sigma_true, m = 15000, 
+                        type = 'AdaLASSO', FDR = 0.1, model = 'gaussian')
+
+
+###############  knockoffs ###############
+
+library(knockoff)
+
+knockoffs = function(X) create.gaussian(X, rep(0, p), Sigma_true, method = "equi")
+foo = stat.glmnet_coefdiff
+k_stat = function(X, X_k, y) foo(X, X_k, y, family = 'gaussian')
+Knockoff_Result <- knockoff.filter(X, Y, statistic = k_stat, knockoffs = knockoffs,
+                                   fdr = 0.1, offset = 1)
+
+
+########### DML ###########
+
+DML_results <- DML(X, Y, Sigma_true, FDR =0.1, K = 8, model = 'gaussian')
+
 
 
