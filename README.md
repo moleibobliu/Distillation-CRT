@@ -10,3 +10,5 @@ Example.R: examples on implementation of our methods and the benchmark methods.
 real_data_analysis.R: our process and analysis (model-X and multiple testing) codes for the real example in our paer.
 
 Simulation/readme_simulation.md: introduction file of the scripts for replication of the simulation studies in the paper.
+
+Simulation/Rscripts.R: R scripts for replication of the simulation studies in the paper; see Simulation/readme_simulation.md for descriptions.
