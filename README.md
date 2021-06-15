@@ -7,7 +7,9 @@ functions.R: the functions for generating data, our method (d0 and dI CRT) and t
 
 Example.R: examples on implementation of our methods and the benchmark methods.
 
-real_data_analysis.R: our process and analysis (model-X and multiple testing) codes for the real example in our paer.
+real example/readme_real.md: readme file for the real data analysis scripts real_data_analysis.R
+
+real example/real_data_analysis.R: our process and analysis (model-X and multiple testing) codes for the real example in our paer. Also includes the code for plotting the results. See real example/readme_real.md for description.
 
 Simulation/readme_simulation.md: introduction file of the scripts for replication of the simulation studies in the paper.
 
