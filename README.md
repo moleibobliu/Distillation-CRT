@@ -13,4 +13,4 @@ real example/real_data_analysis.R: our process and analysis (model-X and multipl
 
 Simulation/readme_simulation.md: introduction file of the scripts for replication of the simulation studies in the paper.
 
-Simulation/Rscripts.R: R scripts for replication of the simulation studies in the paper; see Simulation/readme_simulation.md for descriptions.
+Simulation/simulations.R: R scripts for replication of the simulation studies in the paper; see Simulation/readme_simulation.md for descriptions.
