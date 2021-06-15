@@ -13,10 +13,7 @@ dCRT <- function(X, Y, Sigma_X = NULL, FDR = 0.1, candidate_set = 1:length(X[1,]
     print('Error: please correctly specify the model for Y.')
     return()
   }
-  if (is.null(Sigma_X) & is.null(Gen_X)){
-    print('Error: Need to specify Sigma_X when X is gaussian.')
-    return()
-  }
+
   if (model == 'Gaussian_lasso'){
     model <- 'gaussian'
   }
@@ -238,7 +235,7 @@ dCRT <- function(X, Y, Sigma_X = NULL, FDR = 0.1, candidate_set = 1:length(X[1,]
     }
     
     
-    ############### Estimation p-values ##################
+    ############### Estimate p-values ##################
     
     if (k == 0){
       if (is.null(Gen_X)){
@@ -547,6 +544,144 @@ CRT_sMC <- function(Y, X, Sigma_X, m = 1000, set_use = 1:ncol(X),
 
 
 
+CRT_modified <- function(Y, X, Sigma_X, m = 2000, model = 'gaussian', candidate_set = 1){
+  p <- length(X[1, ])
+  n <- length(Y)
+  
+  cv_lasso <- cv.glmnet(X, Y, alpha = 1, intercept = T, family = model)
+  lamb <- cv_lasso$lambda.min
+  opt_model <- glmnet(X, Y, alpha = 1, lambda = lamb, intercept = T, family = model)
+  beta_fit <- opt_model$beta
+  
+  j <- candidate_set
+  Cond_X <- Creat_condition_gaussian(X, j, Sigma = Sigma_X)
+  X_bar <- Cond_X$mean_x
+  sigma2 <- Cond_X$sigma2_x
+  
+  test_stat <- c(0, 0, 0, 0)
+  
+  for (type in c('origin', 'distill_1', 'distill_2', 'sq_loss')){
+    if (type == 'origin'){
+      test_stat[1] <- beta_fit[j]
+    }
+    if (type == 'distill_1'){
+      offsets <- opt_model$a0 + X[,-j] %*% beta_fit[-j]
+      if (model == 'binomial'){
+        Y_res  <- Y - 1 / (1 + exp(- offsets))
+      }
+      if (model == 'gaussian'){
+        Y_res  <- Y - offsets
+      }
+      X_res <- X[, j]
+      test_stat[2] <- mean(X_res * Y_res)
+      
+    }
+    if (type == 'distill_2'){
+      
+      offsets <- opt_model$a0 + X[,-j] %*% beta_fit[-j] + X_bar * beta_fit[j]
+      
+      if (model == 'binomial'){
+        Y_res  <- Y - 1 / (1 + exp(- offsets))
+      }
+      if (model == 'gaussian'){
+        Y_res  <- Y - offsets
+      }
+      X_res <- X[, j] - X_bar
+      test_stat[3] <- mean(X_res * Y_res)
+    }
+    if (type == 'sq_loss'){
+      test_stat[4] <- mean(Y^2) - mean((Y - X %*% beta_fit - opt_model$a0)^2)
+    }
+  }
+  
+  reject_list <- vector('list', 4)
+  for (t in 1:4){
+    reject_list[[t]] <- c(1)
+  }
+  
+  coef_mat <- opt_model$beta
+  test_mat <- test_stat
+  for (i in 1:m){
+    test_resample <- smc_est_new(Y, X, j, X_bar, sigma2, lamb, model = model)
+    for (t in 1:4){
+      if (abs(test_resample$test_stat[t]) >= abs(test_stat)[t]){
+        reject_list[[t]] <- c(reject_list[[t]], 1)
+      }else{
+        reject_list[[t]] <- c(reject_list[[t]], 0)
+      }
+    }
+    coef_mat <- cbind(coef_mat, as.vector(test_resample$coef))
+    test_mat <- cbind(test_mat, as.vector(test_resample$test_stat))
+  }
+  p_value = rep(1, 6)
+  for (t in 1:4){
+    p_value[t] <- mean(reject_list[[t]])
+  }
+  stats <- test_mat[2, ]
+  p_value[5] <- 2 * min(mean(ifelse(stats >= stats[1], 1, 0)),
+                        mean(ifelse(stats <= stats[1], 1, 0)))
+  stats <- abs(stats - mean(stats))
+  p_value[6] <- mean(ifelse(stats >= stats[1], 1, 0))
+  
+  return(list(p_value = p_value, cv.lambda = lamb, coef = coef_mat, test_stat = test_mat))
+}
+
+
+
+
+smc_est_new <- function(Y, X, j, X_bar, sigma2_x, lamb, model = 'gaussian'){
+  N <- length(Y)
+  p <- length(X[1, ])
+  
+  delta_gen <- rnorm(N, 0, sqrt(sigma2_x))
+  X_sample <- X_bar + delta_gen
+  
+  # Fit the regression
+  
+  X[ ,j] <- X_sample
+  
+  opt_model <- glmnet(X, Y, alpha = 1, lambda = lamb, intercept = T, family = model)
+  beta_fit <- opt_model$beta
+  test_stat <- c(0, 0, 0, 0)
+  
+  for (type in c('origin', 'distill_1', 'distill_2', 'sq_loss')) {
+    if (type == 'origin'){
+      test_stat[1] <- beta_fit[j]
+    }
+    if (type == 'distill_1'){
+      
+      offsets <- opt_model$a0 + X[,-j] %*% beta_fit[-j]
+      
+      if (model == 'binomial'){
+        Y_res  <- Y - 1 / (1 + exp(- offsets))
+      }
+      if (model == 'gaussian'){
+        Y_res  <- Y - offsets
+      }
+      X_res <- X[, j]
+      test_stat[2] <- mean(X_res * Y_res)
+    }
+    if (type == 'distill_2'){
+      
+      offsets <- opt_model$a0 + X[,-j] %*% beta_fit[-j] + X_bar * beta_fit[j]
+      
+      if (model == 'binomial'){
+        Y_res  <- Y - 1 / (1 + exp(- offsets))
+      }
+      if (model == 'gaussian'){
+        Y_res  <- Y - offsets
+      }
+      X_res <- X[, j] - X_bar
+      test_stat[3] <- mean(X_res * Y_res)
+    }
+    if (type == 'sq_loss'){
+      test_stat[4] <- mean(Y^2) - mean((Y - X %*% beta_fit - opt_model$a0)^2)
+    }
+  }
+  
+  return(list(coef = opt_model$beta, test_stat = test_stat))
+}
+
 
 
 ################## DML ########################
@@ -805,20 +940,118 @@ HRT_j <- function(Y_test, X_test, Sigma = NULL, opt_model, indx,
 
 
 
+
+
+######################### Estimate covariance matrix #########################
+
+
+### Ledoit–Wolf (optimal shrinkage) estimator: 
+
+linshrink_cov <- function(X, k = 0, normalize = F) 
+{
+  n <- nrow(X)
+  p <- ncol(X)
+  if (k == 0) {
+    X <- X - tcrossprod(rep(1, n), colMeans(X))
+    k = 1
+  }
+  if (n > k) 
+    effn <- n - k
+  else stop("k must be strictly less than nrow(X)")
+  S <- crossprod(X)/effn
+  Ip <- diag(p)
+  m <- sum(S * Ip)/p
+  d2 <- sum((S - m * Ip)^2)/p
+  b_bar2 <- 1/(p * effn^2) * sum(apply(X, 1, function(x) sum((tcrossprod(x) - 
+                                                                S)^2)))
+  b2 <- min(d2, b_bar2)
+  a2 <- d2 - b2
+  Sigma_true <- b2/d2 * m * Ip + a2/d2 * S
+  
+  if (normalize == T){
+    var_lst <- c()
+    for (indx in 1:p){
+      beta_x <- solve(Sigma_true[-indx, -indx], Sigma_true[-indx, indx])
+      X_bar <- X[ ,-indx] %*% beta_x
+      var_lst <- c(var_lst, mean((X[,indx] - X_bar)^2))
+      print(indx)
+    }
+    theta_lst <- diag(solve(Sigma_true))
+    d <- sqrt(theta_lst * var_lst)
+    Sigma_true <- as.matrix(diag(d)) %*% as.matrix(Sigma_true) %*% as.matrix(diag(d))
+  }
+  
+  return(Sigma_true)
+}
+
+
+### Graphic lasso estimator:
+
+glasso_cov <- function(X, prop = 0){
+  prec_est <- CVglasso(X = X, lam.min.ratio = 3e-2)
+  length(which(prec_est$Omega != 0))
+  Sigma_true <- prec_est$Sigma * (1 - prop) + cov(X) * prop
+  
+  var_lst <- c()
+  for (indx in 1:p){
+    beta_x <- solve(Sigma_true[-indx, -indx], Sigma_true[-indx, indx])
+    X_bar <- X[ ,-indx] %*% beta_x
+    var_lst <- c(var_lst, mean((X[,indx] - X_bar)^2))
+    print(indx)
+  }
+  theta_lst <- diag(solve(Sigma_true))
+  d <- sqrt(theta_lst * var_lst)
+  
+  return(as.matrix(diag(d)) %*% as.matrix(Sigma_true) %*% as.matrix(diag(d)))
+  
+}
+
+
+
+
+
 ################## Generate data for simulation ########################
 
-Generate_data <- function(N, p, s = 20, intercept = 0, 
-                          model = 'linear', Y_dist = 'Gaussian',
-                          Sigma = 'AR', r = 0.4, magn = 0.5,
-                          X_dist = 'gauss', para_x = 0.5, prop = 0,
-                          support = 'first'){
-  sign_beta <- 2 * rbinom(s, 1, 0.5) - 1
-  if (support == 'first'){
-    beta_coef <-  c(sign_beta * rep(magn, s), rep(0, p - s))
+Generate_data <- function(N, p, s = 20, intercept = 0, model = 'linear', Y_dist = 'Gaussian',
+                          Sigma = 'AR', r = 0.4, magn = 0.5, X_dist = 'gauss', para_x = 0.5, prop = 0,
+                          support = 'first', sign_design = 'random', support_dist = NULL){
+  
+  if (sign_design == 'random'){
+    sign_beta <- 2 * rbinom(s, 1, 0.5) - 1
   }
-  if (support == 'random'){
+  
+  if (sign_design == 'pos'){
+    sign_beta <- rep(1, s)
+  }
+  
+  if (sign_design == 'neg'){
+    sign_beta <- c(1, rep(-1, s - 1))
+  }
+  
+  if (sign_design == 'half'){
+    sign_beta <- rep(c(1, -1), s / 2)
+    if (s / 2 != as.integer(s / 2)){
+      print('s needs to be an even number.')
+    }
+  }
+  
+  
+  if (is.null(support_dist)){
+    if (support == 'first'){
+      beta_coef <-  c(sign_beta * rep(magn, s), rep(0, p - s))
+    }
+    if (support == 'random'){
+      beta_coef <- rep(0, p)
+      beta_coef[sample(1:p, s)] <- sign_beta * rep(magn, s)
+    }
+    
+    if (support == 'equal'){
+      beta_coef <- rep(0, p)
+      beta_coef[1 + 0:(s - 1) * (as.integer(p / s))] <- sign_beta * rep(magn, s)
+    }
+  }else{
     beta_coef <- rep(0, p)
-    beta_coef[sample(1:p, s)] <- sign_beta * rep(magn, s)
+    beta_coef[seq(1, s * support_dist, support_dist)] <- sign_beta * magn
   }
   
   
@@ -1010,8 +1243,7 @@ Generate_data <- function(N, p, s = 20, intercept = 0,
     Y <- rnorm(N, mean_y, sqrt(var_y))
   }
   
-  return(list(Y = Y, X = X, beta_true = beta_coef, 
-              Sigma = Sigma_Design))
+  return(list(Y = Y, X = X, beta_true = beta_coef, Sigma = Sigma_Design))
 }
 
 
@@ -1044,4 +1276,7 @@ Gen_forest <- function(N, p, s = 5, r = 0, intercept = 0,
   return(list(Y = Y, X = X, Sigma = Sigma_Design))
   
 }
+
+
+
 

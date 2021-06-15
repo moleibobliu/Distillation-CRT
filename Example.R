@@ -8,7 +8,7 @@ library(MASS)
 library(knockoff)
 library(matrixStats)
 library(randomForest)
-
+library(CVglasso)
 
 ######################## Use for Gaussian X ###################
 
@@ -100,6 +100,27 @@ dICRT_results <- dCRT(X, Y, Sigma_X = Sigma_true,
 dkCRT_results <- dCRT(X, Y, Sigma_X = Sigma_true, candidate_set = c(1),
                       d.interaction = T, k = as.integer(2 * log(p)),
                       CDR = 'No', model = 'RF', M = 1000) 
+
+
+## If the true covariance matrix is not observed (for gaussian covariates), one can use three approaches to estimate X|Z:
+
+## 1. Ledoit–Wolf (optimal shrinkage) estimator: 
+
+Sigma_est <- linshrink_cov(X, k = 1, normalize = T)
+
+## 2. Graphic lasso estimator: 
+
+Sigma_est <- glasso_cov(X)
+
+## 3. Nodewise lasso for conditional mean estimation 
+# (just set the input Sigma_est as NULL and dCRT() will use Nodewise lasso by default):
+
+Sigma_est <- NULL
+
+## Run the algorithm with fitted Sigma_est:
+
+d0CRT_results <- dCRT(X, Y, Sigma_X = Sigma_est,
+                      FDR = 0.1, model = 'Gaussian_lasso') 
 
 
 ##################### dCRT for non gaussian X ###################
