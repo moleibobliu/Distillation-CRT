@@ -74,8 +74,11 @@ dCRT <- function(X, Y, Sigma_X = NULL, FDR = 0.1, candidate_set = 1:length(X[1,]
   selection_set <- intersect(candidate_set, selection_set)
   print('############# Candidate set ###############')
   print(selection_set)
-
   
+  if (length(selection_set) == 0){
+    return(c())
+  }
+
   ############## dCRT ##############
 
   sigma2_lst <- vector('list', length(selection_set))
@@ -945,7 +948,7 @@ HRT_j <- function(Y_test, X_test, Sigma = NULL, opt_model, indx,
 ######################### Estimate covariance matrix #########################
 
 
-### Ledoit–Wolf (optimal shrinkage) estimator: 
+### Ledoit???Wolf (optimal shrinkage) estimator: 
 
 linshrink_cov <- function(X, k = 0, normalize = F) 
 {
