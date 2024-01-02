@@ -104,7 +104,7 @@ dkCRT_results <- dCRT(X, Y, Sigma_X = Sigma_true, candidate_set = c(1),
 
 ## If the true covariance matrix is not observed (for gaussian covariates), one can use three approaches to estimate X|Z:
 
-## 1. Ledoit–Wolf (optimal shrinkage) estimator: 
+## 1. Ledoit???Wolf (optimal shrinkage) estimator: 
 
 Sigma_est <- linshrink_cov(X, k = 1, normalize = T)
 
@@ -163,6 +163,23 @@ Gen_X_example <- function(X, indx, num = 1){
 d0CRT_results <- dCRT(X, Y,FDR = 0.1, mean_X_mat = matrix(6, n, p), 
                       Gen_X = Gen_X_example, CDR = 'Consist w model',
                       model = 'Gaussian_lasso', k = 0, MC_free = F)
+
+
+##### doParellel version (across all candidate hypotheses) #####
+
+library(foreach)
+library(doParallel)
+
+
+system.time({
+d0CRT_results <- dCRT(X, Y, Sigma_X = Sigma_true,
+                      FDR = 0.1, model = 'Gaussian_lasso') 
+})
+
+system.time({
+d0CRT_results_para <- dCRT(X, Y, Sigma_X = Sigma_true,
+                           FDR = 0.1, model = 'Gaussian_lasso', doParallel = T, core_num = 4) 
+})
 
 
 

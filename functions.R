@@ -7,7 +7,7 @@ dCRT <- function(X, Y, Sigma_X = NULL, FDR = 0.1, candidate_set = 1:length(X[1,]
                  lambda.seq = NULL, k = NULL, M = 50000, 
                  central = F, MC_free = T,  X_quantile_mat = NULL, 
                  X_cond_var_mat = NULL, return.pvalues = T, 
-                 eps_dI = 1e-8) {
+                 eps_dI = 1e-8, doParallel = F, core_num = 1) {
   
   if (!model %in% c('Gaussian_lasso', 'Binomial_lasso', 'RF')){
     print('Error: please correctly specify the model for Y.')
@@ -74,11 +74,8 @@ dCRT <- function(X, Y, Sigma_X = NULL, FDR = 0.1, candidate_set = 1:length(X[1,]
   selection_set <- intersect(candidate_set, selection_set)
   print('############# Candidate set ###############')
   print(selection_set)
-  
-  if (length(selection_set) == 0){
-    return(c())
-  }
 
+  
   ############## dCRT ##############
 
   sigma2_lst <- vector('list', length(selection_set))
@@ -86,267 +83,538 @@ dCRT <- function(X, Y, Sigma_X = NULL, FDR = 0.1, candidate_set = 1:length(X[1,]
   offsets_lst <- vector('list', length(selection_set))
   imp_obe_lst <- vector('list', length(selection_set))
   X_use_lst <- vector('list', length(selection_set))
-  pvl_lst <- rep(1, p)
   
-  for (j in 1:length(selection_set)){
-    
-    indx <- selection_set[j]
-    
-    ############### Distill X ##################
-    if (is.null(Gen_X)){
-      Cond_X <- Creat_condition_gaussian(X, indx, Sigma = Sigma_X)
-      mean_X <- Cond_X$mean_x
-      sigma2_x <- Cond_X$sigma2_x
-      sigma2_lst[[j]] <- sigma2_x
-      X_bar_lst[[j]] <- mean_X
-    }else{
-      mean_X <- mean_X_mat[,indx]
-      X_bar_lst[[j]] <- mean_X
-    }
-    X_res_ob <- X[,indx] - mean_X
-    
-    ############### Distill Y and Importance ##################
-    
-    if (model == 'RF'){
-      n_tree <- RF.num.trees[1]
-      n_tree_imp <- RF.num.trees[2]
-
-      if (k >= 1){
-        rf.fit <- randomForest(x = X[,-indx], y = Y, ntree = n_tree)
-        offsets <- rf.fit$predicted
-        offsets_lst[[j]] <- offsets
-          
-        imp_fit <- as.vector(rf.fit$importance)
-        imp_sort <- sort(imp_fit, decreasing = T, index.return = T)
-        index_use <- imp_sort$ix[1:k]
-        
-        X_use <- X[,-indx][,index_use]
-        X_use_lst[[j]] <- X_use
-        
-        # Observed importance
-        
-        rf.indx.fit <- randomForest(x = as.matrix(cbind(X[,indx] - mean_X, offsets, X_use)), 
-                                    Y, ntree = n_tree_imp)
-        imp_obe <- rf.indx.fit$importance[1]
-        imp_obe_lst[[j]] <- imp_obe
-        
-      }else{
-        rf.fit <- randomForest(x = X[,-indx] - mean_X, y = Y, ntree = n_tree)
-        eps_res <- Y - rf.fit$predicted
-        
-        # Observed importance
-        if (MC_free == F | is.null(Gen_X)){
-          imp_obe <- abs(mean(X_res_ob * eps_res))
-        }
-      }
+  
+  if (doParallel == F){
+    pvl_lst <- rep(1, p)
+    for (j in 1:length(selection_set)){
       
-    }
-    
-    if (model == 'binomial' | model == 'gaussian'){
-      if (k >= 1){
-        if (model == 'gaussian'){
-          family = gaussian()
-        }
-        if (model == 'binomial'){
-          family = binomial()
-        }
-        cv_lasso <- cv.glmnet(X[,-indx], Y, alpha = 1, family = model, 
-                              lambda = lambda.seq, dfmax = as.integer(p / 2))
-        lamb <- cv_lasso$lambda.min
-        opt_model <- glmnet(X[,-indx], Y, alpha = 1, lambda = lamb, 
-                            family = model, dfmax = as.integer(p / 2))
-        
-        beta_leave <- opt_model$beta
-        beta_sort <- sort(abs(as.vector(beta_leave)), decreasing = T, index.return = T)
-        index_use <- beta_sort$ix[1:k]
-        X_use <- X[,-indx][,index_use]
-        X_use_lst[[j]] <- X_use
-        
-        offsets <- as.vector(opt_model$a0 + X[,-indx] %*% opt_model$beta)
-        
-        if (model == 'binomial'){
-          eps_res <- Y - 1 / (1 + exp(- offsets))
-        }
-        if (model == 'gaussian'){
-          eps_res <- Y - offsets
-        }
-        
-        offsets_lst[[j]] <- offsets
-        
-        print('############# distilled ###############')
-        print(indx)
-        
-        if (type == 'cov'){
-          
-          if (!is.null(Gen_X)){
-            X_quant <- X_quantile_mat[,indx]
-            X_res_ob <- qnorm(X_quant, mean = rep(0, n), sd = 1)
-            sigma2_x <- 1
-          }
-          
-          weight_inter <- 1 / sqrt(k)
-          W_inter <- eps_res
-          for (l in 1:length(X_use[1,])){
-            W_inter <- cbind(W_inter, X_use[,l] * eps_res)
-          }
-          XTX <- t(cbind(1, X_use)) %*% cbind(1, X_use)
-          XTX_inv <- solve(XTX)
-          
-          Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_ob
-          WTW <- t(W_inter) %*% W_inter
-          svd_WTW <- svd(WTW)
-          root_WTW <- svd_WTW$u %*% diag(sqrt(svd_WTW$d)) %*% t(svd_WTW$v)
-          lambda_W <- svd(root_WTW %*% XTX_inv %*% 
-                            diag(c(1, rep(weight_inter^2, k))) %*% XTX_inv %*% root_WTW)$d
-          imp_obe_lst[[j]] <- sum(Z_dI^2) / c(sigma2_x)
-        }
-        
-        if (type == 'beta'){
-          weight_inter <- 1 / sqrt(k)
-          W_inter <- cbind(1, X_use) * as.vector(eps_res)
-          W_inter_X <- cbind(1, X_use) * as.vector(X_res_ob)
-          XTX <- t(W_inter_X) %*% W_inter_X
-          XTX_inv <- solve(XTX)
-          Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_ob
-          imp_obe_lst[[j]] <- sum(Z_dI^2)
-          
-        }
-        
-      }else{
-        cv_lasso_null <- cv.glmnet(X[,-indx], Y, alpha = 1, family = model, 
-                                   lambda = lambda.seq, dfmax = as.integer(p / 2))
-        lamb_null <- cv_lasso_null$lambda.min
-        model_res_null <- glmnet(X[,-indx], Y, alpha = 1, lambda = lamb_null,
-                                 family = model, dfmax = as.integer(p / 2))
-        if (model == 'binomial'){
-          eps_res <- Y - 1 / (1 + exp(- predict(model_res_null, X[,-indx])))
-        }
-        if (model == 'gaussian'){
-          eps_res <- Y - predict(model_res_null, X[,-indx])
-        }
-        if (MC_free == F | is.null(Gen_X)){
-          if (type == 'cov'){
-            imp_obe <- abs(mean(X_res_ob * eps_res))
-          }
-          if (type == 'beta'){
-            imp_obe <- abs(mean(X_res_ob * eps_res)) / mean(X_res_ob^2)
-          }
-        }
-        print('############# distilled ###############')
-        print(indx)
-      }
-    }
-    
-    
-    ############### Estimate p-values ##################
-    
-    if (k == 0){
+      indx <- selection_set[j]
+      
+      ############### Distill X ##################
       if (is.null(Gen_X)){
-        
-        if (type == 'cov'){
-          emp_var <- mean(eps_res^2) * sigma2_x
-          pvl <- 2 * pnorm(- sqrt(n) * abs(imp_obe) / sqrt(emp_var))
-          pvl_lst[indx] <- pvl
-        }
-        if (type == 'beta'){
-          X_res_sample <- rnorm(n * M, 0, sqrt(sigma2_x))
-          X_res_sample <- matrix(X_res_sample, n, M)
-          var_lst_sample <- unlist(lapply(c(1:M), function(j){
-            mean((X_res_sample[,j])^2) })) 
-          t_lst <- abs(t(X_res_sample) %*% eps_res / n) / var_lst_sample
-          pvl_lst[indx] <- mean(c(1, ifelse(t_lst >= imp_obe, 1, 0)))
-        }
-        
+        Cond_X <- Creat_condition_gaussian(X, indx, Sigma = Sigma_X)
+        mean_X <- Cond_X$mean_x
+        sigma2_x <- Cond_X$sigma2_x
+        sigma2_lst[[j]] <- sigma2_x
+        X_bar_lst[[j]] <- mean_X
       }else{
-        if (MC_free == T){
-          if (is.null(X_quantile_mat) | is.null(X_cond_var_mat)){
-            print('Please specify conditional quantile of X when using MCf-d0CRT')
-            return()
-          }
-          X_quant <- X_quantile_mat[,indx]
-          X_cond_var <- X_cond_var_mat[,indx]
-          X_norm <- qnorm(X_quant, mean = rep(0, n), sd = sqrt(X_cond_var))
-          imp_obe <- abs(mean(X_norm * eps_res))
-          emp_var <- mean(X_cond_var * eps_res^2)
-          pvl <- 2 * pnorm(- sqrt(n) * abs(imp_obe) / sqrt(emp_var))
-          pvl_lst[indx] <- pvl
-          
-        }else{
-          X_resample <- Gen_X(X, indx, num = M)
-          X_res_resample <- X_resample - mean_X
-          
-          if (type == 'cov'){
-            t_lst <- t(X_res_resample) %*% eps_res / n
-            t_lst <- c(imp_obe, abs(t_lst))
-          }
-          if (type == 'beta'){
-            t_lst <- unlist(lapply(c(1:M), function(j){
-              mean(X_res_resample[,j] * eps_res) / mean((X_res_resample[,j])^2)
-            })) 
-            t_lst <- c(imp_obe, abs(t_lst))
-          }
-          pvl_lst[indx] <- mean(ifelse(t_lst >= imp_obe, 1, 0))
-        }
+        mean_X <- mean_X_mat[,indx]
+        X_bar_lst[[j]] <- mean_X
       }
+      X_res_ob <- X[,indx] - mean_X
       
-      print('############# d0CRT pvalue ###############')
-      print(paste(indx, pvl_lst[indx], sep = ': '))
-      
-    }else{
+      ############### Distill Y and Importance ##################
       
       if (model == 'RF'){
-        Z_vec <- c(1)
-        for (m in 1:M) {
-          if (is.null(Gen_X)){
-            delta_gen <- rnorm(n, 0, sqrt(sigma2_x))
-            X_sample <- mean_X + delta_gen
-          }else{
-            X_sample <- Gen_X(X, indx, num = 1)
+        n_tree <- RF.num.trees[1]
+        n_tree_imp <- RF.num.trees[2]
+        
+        if (k >= 1){
+          rf.fit <- randomForest(x = X[,-indx], y = Y, ntree = n_tree)
+          offsets <- rf.fit$predicted
+          offsets_lst[[j]] <- offsets
+          
+          imp_fit <- as.vector(rf.fit$importance)
+          imp_sort <- sort(imp_fit, decreasing = T, index.return = T)
+          index_use <- imp_sort$ix[1:k]
+          
+          X_use <- X[,-indx][,index_use]
+          X_use_lst[[j]] <- X_use
+          
+          # Observed importance
+          
+          rf.indx.fit <- randomForest(x = as.matrix(cbind(X[,indx] - mean_X, offsets, X_use)), 
+                                      Y, ntree = n_tree_imp)
+          imp_obe <- rf.indx.fit$importance[1]
+          imp_obe_lst[[j]] <- imp_obe
+          
+        }else{
+          rf.fit <- randomForest(x = X[,-indx] - mean_X, y = Y, ntree = n_tree)
+          eps_res <- Y - rf.fit$predicted
+          
+          # Observed importance
+          if (MC_free == F | is.null(Gen_X)){
+            imp_obe <- abs(mean(X_res_ob * eps_res))
           }
-          rf.sam.fit <- randomForest(x = as.matrix(cbind(X_sample - mean_X, offsets, X_use)), 
-                                     Y, ntree = n_tree_imp)
-          imp_resample <- rf.sam.fit$importance[1]
-          Z <- ifelse(imp_resample >= imp_obe, 1, 0)
-          Z_vec <- c(Z_vec, Z)
-        }
-        pvl_lst[indx] <- mean(Z_vec)
-      }else{
-        if (type == 'cov'){
-          pvl <- imhof(imp_obe_lst[[j]], lambda_W, epsabs = eps_dI)
-          pvl_lst[indx] <- abs(pvl$Qq)
         }
         
-        if (type == 'beta'){
+      }
+      
+      if (model == 'binomial' | model == 'gaussian'){
+        if (k >= 1){
+          if (model == 'gaussian'){
+            family = gaussian()
+          }
+          if (model == 'binomial'){
+            family = binomial()
+          }
+          cv_lasso <- cv.glmnet(X[,-indx], Y, alpha = 1, family = model, 
+                                lambda = lambda.seq, dfmax = as.integer(p / 2))
+          lamb <- cv_lasso$lambda.min
+          opt_model <- glmnet(X[,-indx], Y, alpha = 1, lambda = lamb, 
+                              family = model, dfmax = as.integer(p / 2))
           
-          if (is.null(Gen_X)){
-            X_res_sample <- rnorm(n * M, 0, sqrt(sigma2_x))
-            X_res_sample <- matrix(X_res_sample, n, M)
-          }else{
-            X_resample <- Gen_X(X, indx, num = M)
-            X_res_sample <- X_resample - mean_X
+          beta_leave <- opt_model$beta
+          beta_sort <- sort(abs(as.vector(beta_leave)), decreasing = T, index.return = T)
+          index_use <- beta_sort$ix[1:k]
+          X_use <- X[,-indx][,index_use]
+          X_use_lst[[j]] <- X_use
+          
+          offsets <- as.vector(opt_model$a0 + X[,-indx] %*% opt_model$beta)
+          
+          if (model == 'binomial'){
+            eps_res <- Y - 1 / (1 + exp(- offsets))
+          }
+          if (model == 'gaussian'){
+            eps_res <- Y - offsets
           }
           
-          W_inter <- cbind(1, X_use) * as.vector(eps_res)
-          weight_inter <- 1 / sqrt(k)
+          offsets_lst[[j]] <- offsets
           
-          t_lst <- unlist(lapply(c(1:M), function(j){
-            W_inter_X <- cbind(1, X_use) * as.vector(X_res_sample[,j])
+          print('############# distilled ###############')
+          print(indx)
+          
+          if (type == 'cov'){
+            
+            if (!is.null(Gen_X)){
+              X_quant <- X_quantile_mat[,indx]
+              X_res_ob <- qnorm(X_quant, mean = rep(0, n), sd = 1)
+              sigma2_x <- 1
+            }
+            
+            weight_inter <- 1 / sqrt(k)
+            W_inter <- eps_res
+            for (l in 1:length(X_use[1,])){
+              W_inter <- cbind(W_inter, X_use[,l] * eps_res)
+            }
+            XTX <- t(cbind(1, X_use)) %*% cbind(1, X_use)
+            XTX_inv <- solve(XTX)
+            
+            Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_ob
+            WTW <- t(W_inter) %*% W_inter
+            svd_WTW <- svd(WTW)
+            root_WTW <- svd_WTW$u %*% diag(sqrt(svd_WTW$d)) %*% t(svd_WTW$v)
+            lambda_W <- svd(root_WTW %*% XTX_inv %*% 
+                              diag(c(1, rep(weight_inter^2, k))) %*% XTX_inv %*% root_WTW)$d
+            imp_obe_lst[[j]] <- sum(Z_dI^2) / c(sigma2_x)
+          }
+          
+          if (type == 'beta'){
+            weight_inter <- 1 / sqrt(k)
+            W_inter <- cbind(1, X_use) * as.vector(eps_res)
+            W_inter_X <- cbind(1, X_use) * as.vector(X_res_ob)
             XTX <- t(W_inter_X) %*% W_inter_X
             XTX_inv <- solve(XTX)
-            Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_sample[,j]
-            sum(Z_dI^2)
-          })) 
+            Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_ob
+            imp_obe_lst[[j]] <- sum(Z_dI^2)
+            
+          }
           
-          pvl_lst[indx] <- mean(c(1, ifelse(t_lst >= imp_obe_lst[[j]], 1, 0)))
-          
+        }else{
+          cv_lasso_null <- cv.glmnet(X[,-indx], Y, alpha = 1, family = model, 
+                                     lambda = lambda.seq, dfmax = as.integer(p / 2))
+          lamb_null <- cv_lasso_null$lambda.min
+          model_res_null <- glmnet(X[,-indx], Y, alpha = 1, lambda = lamb_null,
+                                   family = model, dfmax = as.integer(p / 2))
+          if (model == 'binomial'){
+            eps_res <- Y - 1 / (1 + exp(- predict(model_res_null, X[,-indx])))
+          }
+          if (model == 'gaussian'){
+            eps_res <- Y - predict(model_res_null, X[,-indx])
+          }
+          if (MC_free == F | is.null(Gen_X)){
+            if (type == 'cov'){
+              imp_obe <- abs(mean(X_res_ob * eps_res))
+            }
+            if (type == 'beta'){
+              imp_obe <- abs(mean(X_res_ob * eps_res)) / mean(X_res_ob^2)
+            }
+          }
+          print('############# distilled ###############')
+          print(indx)
         }
       }
       
-      print('############# dkCRT pvalue ###############')
-      print(paste(indx, pvl_lst[indx], sep = ': '))
       
+      ############### Estimate p-values ##################
+      
+      if (k == 0){
+        if (is.null(Gen_X)){
+          
+          if (type == 'cov'){
+            emp_var <- mean(eps_res^2) * sigma2_x
+            pvl <- 2 * pnorm(- sqrt(n) * abs(imp_obe) / sqrt(emp_var))
+            pvl_lst[indx] <- pvl
+          }
+          if (type == 'beta'){
+            X_res_sample <- rnorm(n * M, 0, sqrt(sigma2_x))
+            X_res_sample <- matrix(X_res_sample, n, M)
+            var_lst_sample <- unlist(lapply(c(1:M), function(j){
+              mean((X_res_sample[,j])^2) })) 
+            t_lst <- abs(t(X_res_sample) %*% eps_res / n) / var_lst_sample
+            pvl_lst[indx] <- mean(c(1, ifelse(t_lst >= imp_obe, 1, 0)))
+          }
+          
+        }else{
+          if (MC_free == T){
+            if (is.null(X_quantile_mat) | is.null(X_cond_var_mat)){
+              print('Please specify conditional quantile of X when using MCf-d0CRT')
+              return()
+            }
+            X_quant <- X_quantile_mat[,indx]
+            X_cond_var <- X_cond_var_mat[,indx]
+            X_norm <- qnorm(X_quant, mean = rep(0, n), sd = sqrt(X_cond_var))
+            imp_obe <- abs(mean(X_norm * eps_res))
+            emp_var <- mean(X_cond_var * eps_res^2)
+            pvl <- 2 * pnorm(- sqrt(n) * abs(imp_obe) / sqrt(emp_var))
+            pvl_lst[indx] <- pvl
+            
+          }else{
+            X_resample <- Gen_X(X, indx, num = M)
+            X_res_resample <- X_resample - mean_X
+            
+            if (type == 'cov'){
+              t_lst <- t(X_res_resample) %*% eps_res / n
+              t_lst <- c(imp_obe, abs(t_lst))
+            }
+            if (type == 'beta'){
+              t_lst <- unlist(lapply(c(1:M), function(j){
+                mean(X_res_resample[,j] * eps_res) / mean((X_res_resample[,j])^2)
+              })) 
+              t_lst <- c(imp_obe, abs(t_lst))
+            }
+            pvl_lst[indx] <- mean(ifelse(t_lst >= imp_obe, 1, 0))
+          }
+        }
+        
+        print('############# d0CRT pvalue ###############')
+        print(paste(indx, pvl_lst[indx], sep = ': '))
+        
+      }else{
+        
+        if (model == 'RF'){
+          Z_vec <- c(1)
+          for (m in 1:M) {
+            if (is.null(Gen_X)){
+              delta_gen <- rnorm(n, 0, sqrt(sigma2_x))
+              X_sample <- mean_X + delta_gen
+            }else{
+              X_sample <- Gen_X(X, indx, num = 1)
+            }
+            rf.sam.fit <- randomForest(x = as.matrix(cbind(X_sample - mean_X, offsets, X_use)), 
+                                       Y, ntree = n_tree_imp)
+            imp_resample <- rf.sam.fit$importance[1]
+            Z <- ifelse(imp_resample >= imp_obe, 1, 0)
+            Z_vec <- c(Z_vec, Z)
+          }
+          pvl_lst[indx] <- mean(Z_vec)
+        }else{
+          if (type == 'cov'){
+            pvl <- imhof(imp_obe_lst[[j]], lambda_W, epsabs = eps_dI)
+            pvl_lst[indx] <- abs(pvl$Qq)
+          }
+          
+          if (type == 'beta'){
+            
+            if (is.null(Gen_X)){
+              X_res_sample <- rnorm(n * M, 0, sqrt(sigma2_x))
+              X_res_sample <- matrix(X_res_sample, n, M)
+            }else{
+              X_resample <- Gen_X(X, indx, num = M)
+              X_res_sample <- X_resample - mean_X
+            }
+            
+            W_inter <- cbind(1, X_use) * as.vector(eps_res)
+            weight_inter <- 1 / sqrt(k)
+            
+            t_lst <- unlist(lapply(c(1:M), function(j){
+              W_inter_X <- cbind(1, X_use) * as.vector(X_res_sample[,j])
+              XTX <- t(W_inter_X) %*% W_inter_X
+              XTX_inv <- solve(XTX)
+              Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_sample[,j]
+              sum(Z_dI^2)
+            })) 
+            
+            pvl_lst[indx] <- mean(c(1, ifelse(t_lst >= imp_obe_lst[[j]], 1, 0)))
+            
+          }
+        }
+        
+        print('############# dkCRT pvalue ###############')
+        print(paste(indx, pvl_lst[indx], sep = ': '))
+        
+      }
     }
+    
   }
+  
+  if (doParallel == T){
+    registerDoParallel(core_num)  
+    
+    pvl_lst <- foreach(j = 1:length(selection_set)) %dopar% {
+      indx <- selection_set[j]
+      
+      ############### Distill X ##################
+      if (is.null(Gen_X)){
+        Cond_X <- Creat_condition_gaussian(X, indx, Sigma = Sigma_X)
+        mean_X <- Cond_X$mean_x
+        sigma2_x <- Cond_X$sigma2_x
+        sigma2_lst[[j]] <- sigma2_x
+        X_bar_lst[[j]] <- mean_X
+      }else{
+        mean_X <- mean_X_mat[,indx]
+        X_bar_lst[[j]] <- mean_X
+      }
+      X_res_ob <- X[,indx] - mean_X
+      
+      ############### Distill Y and Importance ##################
+      
+      if (model == 'RF'){
+        n_tree <- RF.num.trees[1]
+        n_tree_imp <- RF.num.trees[2]
+        
+        if (k >= 1){
+          rf.fit <- randomForest(x = X[,-indx], y = Y, ntree = n_tree)
+          offsets <- rf.fit$predicted
+          offsets_lst[[j]] <- offsets
+          
+          imp_fit <- as.vector(rf.fit$importance)
+          imp_sort <- sort(imp_fit, decreasing = T, index.return = T)
+          index_use <- imp_sort$ix[1:k]
+          
+          X_use <- X[,-indx][,index_use]
+          X_use_lst[[j]] <- X_use
+          
+          # Observed importance
+          
+          rf.indx.fit <- randomForest(x = as.matrix(cbind(X[,indx] - mean_X, offsets, X_use)), 
+                                      Y, ntree = n_tree_imp)
+          imp_obe <- rf.indx.fit$importance[1]
+          imp_obe_lst[[j]] <- imp_obe
+          
+        }else{
+          rf.fit <- randomForest(x = X[,-indx] - mean_X, y = Y, ntree = n_tree)
+          eps_res <- Y - rf.fit$predicted
+          
+          # Observed importance
+          if (MC_free == F | is.null(Gen_X)){
+            imp_obe <- abs(mean(X_res_ob * eps_res))
+          }
+        }
+        
+      }
+      
+      if (model == 'binomial' | model == 'gaussian'){
+        if (k >= 1){
+          if (model == 'gaussian'){
+            family = gaussian()
+          }
+          if (model == 'binomial'){
+            family = binomial()
+          }
+          cv_lasso <- cv.glmnet(X[,-indx], Y, alpha = 1, family = model, 
+                                lambda = lambda.seq, dfmax = as.integer(p / 2))
+          lamb <- cv_lasso$lambda.min
+          opt_model <- glmnet(X[,-indx], Y, alpha = 1, lambda = lamb, 
+                              family = model, dfmax = as.integer(p / 2))
+          
+          beta_leave <- opt_model$beta
+          beta_sort <- sort(abs(as.vector(beta_leave)), decreasing = T, index.return = T)
+          index_use <- beta_sort$ix[1:k]
+          X_use <- X[,-indx][,index_use]
+          X_use_lst[[j]] <- X_use
+          
+          offsets <- as.vector(opt_model$a0 + X[,-indx] %*% opt_model$beta)
+          
+          if (model == 'binomial'){
+            eps_res <- Y - 1 / (1 + exp(- offsets))
+          }
+          if (model == 'gaussian'){
+            eps_res <- Y - offsets
+          }
+          
+          offsets_lst[[j]] <- offsets
+          
+          print('############# distilled ###############')
+          print(indx)
+          
+          if (type == 'cov'){
+            
+            if (!is.null(Gen_X)){
+              X_quant <- X_quantile_mat[,indx]
+              X_res_ob <- qnorm(X_quant, mean = rep(0, n), sd = 1)
+              sigma2_x <- 1
+            }
+            
+            weight_inter <- 1 / sqrt(k)
+            W_inter <- eps_res
+            for (l in 1:length(X_use[1,])){
+              W_inter <- cbind(W_inter, X_use[,l] * eps_res)
+            }
+            XTX <- t(cbind(1, X_use)) %*% cbind(1, X_use)
+            XTX_inv <- solve(XTX)
+            
+            Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_ob
+            WTW <- t(W_inter) %*% W_inter
+            svd_WTW <- svd(WTW)
+            root_WTW <- svd_WTW$u %*% diag(sqrt(svd_WTW$d)) %*% t(svd_WTW$v)
+            lambda_W <- svd(root_WTW %*% XTX_inv %*% 
+                              diag(c(1, rep(weight_inter^2, k))) %*% XTX_inv %*% root_WTW)$d
+            imp_obe_lst[[j]] <- sum(Z_dI^2) / c(sigma2_x)
+          }
+          
+          if (type == 'beta'){
+            weight_inter <- 1 / sqrt(k)
+            W_inter <- cbind(1, X_use) * as.vector(eps_res)
+            W_inter_X <- cbind(1, X_use) * as.vector(X_res_ob)
+            XTX <- t(W_inter_X) %*% W_inter_X
+            XTX_inv <- solve(XTX)
+            Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_ob
+            imp_obe_lst[[j]] <- sum(Z_dI^2)
+            
+          }
+          
+        }else{
+          cv_lasso_null <- cv.glmnet(X[,-indx], Y, alpha = 1, family = model, 
+                                     lambda = lambda.seq, dfmax = as.integer(p / 2))
+          lamb_null <- cv_lasso_null$lambda.min
+          model_res_null <- glmnet(X[,-indx], Y, alpha = 1, lambda = lamb_null,
+                                   family = model, dfmax = as.integer(p / 2))
+          if (model == 'binomial'){
+            eps_res <- Y - 1 / (1 + exp(- predict(model_res_null, X[,-indx])))
+          }
+          if (model == 'gaussian'){
+            eps_res <- Y - predict(model_res_null, X[,-indx])
+          }
+          if (MC_free == F | is.null(Gen_X)){
+            if (type == 'cov'){
+              imp_obe <- abs(mean(X_res_ob * eps_res))
+            }
+            if (type == 'beta'){
+              imp_obe <- abs(mean(X_res_ob * eps_res)) / mean(X_res_ob^2)
+            }
+          }
+          print('############# distilled ###############')
+          print(indx)
+        }
+      }
+      
+      
+      ############### Estimate p-values ##################
+      
+      if (k == 0){
+        if (is.null(Gen_X)){
+          
+          if (type == 'cov'){
+            emp_var <- mean(eps_res^2) * sigma2_x
+            pvl <- 2 * pnorm(- sqrt(n) * abs(imp_obe) / sqrt(emp_var))
+           
+          }
+          if (type == 'beta'){
+            X_res_sample <- rnorm(n * M, 0, sqrt(sigma2_x))
+            X_res_sample <- matrix(X_res_sample, n, M)
+            var_lst_sample <- unlist(lapply(c(1:M), function(j){
+              mean((X_res_sample[,j])^2) })) 
+            t_lst <- abs(t(X_res_sample) %*% eps_res / n) / var_lst_sample
+            pvl <- mean(c(1, ifelse(t_lst >= imp_obe, 1, 0)))
+          }
+          
+        }else{
+          if (MC_free == T){
+            if (is.null(X_quantile_mat) | is.null(X_cond_var_mat)){
+              print('Please specify conditional quantile of X when using MCf-d0CRT')
+              return()
+            }
+            X_quant <- X_quantile_mat[,indx]
+            X_cond_var <- X_cond_var_mat[,indx]
+            X_norm <- qnorm(X_quant, mean = rep(0, n), sd = sqrt(X_cond_var))
+            imp_obe <- abs(mean(X_norm * eps_res))
+            emp_var <- mean(X_cond_var * eps_res^2)
+            pvl <- 2 * pnorm(- sqrt(n) * abs(imp_obe) / sqrt(emp_var))
+          
+          }else{
+            X_resample <- Gen_X(X, indx, num = M)
+            X_res_resample <- X_resample - mean_X
+            
+            if (type == 'cov'){
+              t_lst <- t(X_res_resample) %*% eps_res / n
+              t_lst <- c(imp_obe, abs(t_lst))
+            }
+            if (type == 'beta'){
+              t_lst <- unlist(lapply(c(1:M), function(j){
+                mean(X_res_resample[,j] * eps_res) / mean((X_res_resample[,j])^2)
+              })) 
+              t_lst <- c(imp_obe, abs(t_lst))
+            }
+            pvl <- mean(ifelse(t_lst >= imp_obe, 1, 0))
+          }
+        }
+        
+        print('############# d0CRT pvalue ###############')
+        print(paste(indx, pvl, sep = ': '))
+        
+      }else{
+        
+        if (model == 'RF'){
+          Z_vec <- c(1)
+          for (m in 1:M) {
+            if (is.null(Gen_X)){
+              delta_gen <- rnorm(n, 0, sqrt(sigma2_x))
+              X_sample <- mean_X + delta_gen
+            }else{
+              X_sample <- Gen_X(X, indx, num = 1)
+            }
+            rf.sam.fit <- randomForest(x = as.matrix(cbind(X_sample - mean_X, offsets, X_use)), 
+                                       Y, ntree = n_tree_imp)
+            imp_resample <- rf.sam.fit$importance[1]
+            Z <- ifelse(imp_resample >= imp_obe, 1, 0)
+            Z_vec <- c(Z_vec, Z)
+          }
+          pvl <- mean(Z_vec)
+        }else{
+          if (type == 'cov'){
+            pvl <- imhof(imp_obe_lst[[j]], lambda_W, epsabs = eps_dI)
+            pvl <- abs(pvl$Qq)
+          }
+          
+          if (type == 'beta'){
+            
+            if (is.null(Gen_X)){
+              X_res_sample <- rnorm(n * M, 0, sqrt(sigma2_x))
+              X_res_sample <- matrix(X_res_sample, n, M)
+            }else{
+              X_resample <- Gen_X(X, indx, num = M)
+              X_res_sample <- X_resample - mean_X
+            }
+            
+            W_inter <- cbind(1, X_use) * as.vector(eps_res)
+            weight_inter <- 1 / sqrt(k)
+            
+            t_lst <- unlist(lapply(c(1:M), function(j){
+              W_inter_X <- cbind(1, X_use) * as.vector(X_res_sample[,j])
+              XTX <- t(W_inter_X) %*% W_inter_X
+              XTX_inv <- solve(XTX)
+              Z_dI <- diag(c(1, rep(weight_inter, k))) %*% XTX_inv %*% t(W_inter) %*% X_res_sample[,j]
+              sum(Z_dI^2)
+            })) 
+            
+            pvl <- mean(c(1, ifelse(t_lst >= imp_obe_lst[[j]], 1, 0)))
+            
+          }
+        }
+        
+        print('############# dkCRT pvalue ###############')
+        print(paste(indx, pvl, sep = ': '))
+        
+      }
+      pvl 
+    }
+    pvl_lst_select <- unlist(pvl_lst)
+    pvl_lst <- rep(1, p)
+    pvl_lst[selection_set] <- pvl_lst_select
+  }
+  
   
   CRT_BHq_lst <- p.adjust(pvl_lst, method = 'BH')
   selection_set_CRT <- which(CRT_BHq_lst <= FDR)
